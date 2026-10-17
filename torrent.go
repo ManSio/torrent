@@ -1385,14 +1385,48 @@ func (t *Torrent) AnnounceToDht(s DhtServer) (done <-chan struct{}, stop func(),
 	return
 }
 
+// Intervals controlling how often a torrent announces itself over DHT. The
+// regular interval matches the historical behaviour; the retry interval is used
+// while the torrent still has no peers, so that an announce that reaches the
+// swarm but comes back empty (for example one started before the DHT routing
+// table was populated) is repeated sooner instead of stalling for the full
+// regular interval.
+const (
+	dhtAnnounceInterval      = 5 * time.Minute
+	dhtAnnounceRetryInterval = 15 * time.Second
+)
+
+// nextDhtAnnounceInterval returns the delay before a torrent's next DHT
+// announce. A torrent that reached at least one peer keeps the regular
+// interval; a torrent that came back with no peers retries sooner, doubling up
+// to the regular interval so a permanently empty swarm is not hammered.
+func nextDhtAnnounceInterval(current time.Duration, hasPeers bool) time.Duration {
+	if hasPeers {
+		return dhtAnnounceInterval
+	}
+	if current >= dhtAnnounceInterval {
+		return dhtAnnounceRetryInterval
+	}
+	next := current * 2
+	if next > dhtAnnounceInterval {
+		next = dhtAnnounceInterval
+	}
+	return next
+}
+
 func (t *Torrent) announceToDht(s DhtServer) error {
-	_, stop, err := t.AnnounceToDht(s)
+	done, stop, err := t.AnnounceToDht(s)
 	if err != nil {
 		return err
 	}
+	// Return as soon as the traversal ends instead of always waiting the full
+	// regular interval, so the caller can decide how soon to retry.
+	timer := time.NewTimer(dhtAnnounceInterval)
+	defer timer.Stop()
 	select {
 	case <-t.closed.LockedChan(t.cl.locker()):
-	case <-time.After(5 * time.Minute):
+	case <-done:
+	case <-timer.C:
 	}
 	stop()
 	return nil
@@ -1400,6 +1434,7 @@ func (t *Torrent) announceToDht(s DhtServer) error {
 
 func (t *Torrent) dhtAnnouncer(s DhtServer) {
 	cl := t.cl
+	interval := dhtAnnounceInterval
 	for {
 		select {
 		case <-t.closed.LockedChan(cl.locker()):
@@ -1412,6 +1447,17 @@ func (t *Torrent) dhtAnnouncer(s DhtServer) {
 		err := t.announceToDht(s)
 		if err != nil {
 			t.logger.WithDefaultLevel(log.Debug).Printf("error announcing %q to DHT: %s", t, err)
+		}
+		cl.lock()
+		hasPeers := len(t.conns) > 0
+		cl.unlock()
+		interval = nextDhtAnnounceInterval(interval, hasPeers)
+		timer := time.NewTimer(interval)
+		select {
+		case <-t.closed.LockedChan(cl.locker()):
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 	}
 }
