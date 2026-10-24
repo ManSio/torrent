@@ -241,6 +241,20 @@ func (p *Piece) UpdateCompletion() {
 	p.t.updatePieceCompletion(p.index)
 }
 
+// InvalidateStorage must be called when the piece's data was lost from backing
+// storage behind the client's back (e.g. an external cache evicted it), while
+// the client may still count chunks of it as received. Every chunk of the piece
+// becomes pending again, pending peer requests are dropped, and readers are
+// woken, so the piece is re-requested from peers instead of stale (zero) bytes
+// being served. See YouROK/TorrServer#925.
+func (p *Piece) InvalidateStorage() {
+	p.t.cl.lock()
+	defer p.t.cl.unlock()
+	p.t.pendAllChunkSpecs(p.index)
+	p.t.cancelRequestsForPiece(p.index)
+	p.t.tickleReaders()
+}
+
 func (p *Piece) completion() (ret storage.Completion) {
 	ret.Complete = p.t.pieceComplete(p.index)
 	ret.Ok = p.storageCompletionOk
