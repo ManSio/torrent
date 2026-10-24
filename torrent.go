@@ -1227,6 +1227,12 @@ func (t *Torrent) assertNoPendingRequests() {
 	}
 }
 
+func (t *Torrent) inFlightRequests(r request) int {
+	t.pendingRequestsMu.RLock()
+	defer t.pendingRequestsMu.RUnlock()
+	return t.pendingRequests[r]
+}
+
 func (t *Torrent) dropConnection(c *connection) {
 	t.cl.event.Broadcast()
 	c.Close()

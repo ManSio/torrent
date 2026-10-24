@@ -406,7 +406,13 @@ func (cl *Client) Close() {
 	cl.lock()
 	defer cl.unlock()
 	cl.closed.Set()
-	// cl.eachDhtServer(func(s DhtServer) { s.Close() }) // TODO
+	// Close the servers first: DHT serve can be blocked in uTP ReadFrom, and
+	// only a destroyed socket makes that read return (lampac-nextgen/utp).
+	cl.eachDhtServer(func(s DhtServer) {
+		if c, ok := s.(interface{ Close() }); ok {
+			c.Close()
+		}
+	})
 	cl.closeSockets()
 	for _, t := range cl.torrents {
 		t.close()
